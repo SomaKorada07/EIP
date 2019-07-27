@@ -1,0 +1,8 @@
+Go through this Post: https://machinelearningmastery.com/text-generation-lstm-recurrent-neural-networks-python-keras/
+Add these improvements to the final code described in the post:
+Predict 500 characters only
+Remove all the punctuation from the source text
+Train the model on padded sequences (https://machinelearningmastery.com/data-preparation-variable-length-input-sequences-sequence-prediction/) rather than random sequences of characters. 
+Train the model for 100 epochs
+Add dropout to the input layer, remove it from the layer before dense layer. Use Dropout value of 0.1 everywhere
+Submit!
