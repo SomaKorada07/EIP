@@ -1,0 +1,13 @@
+Assignment 3A:
+Refer to the code shared in Session 1. Achieve 99.2 Validation Accuracy while using less than 18000 Parameters.
+
+Assignment 3B:
+Open this Notebook (https://colab.research.google.com/drive/1riIR_3wcDL1FeIub2kjj0LPdY-ul54EI) Change the skip-connection from layer 13, to layer 12, rename x to layer1, etc. and then train the network for 50 Epochs.
+
+Assignment 3C:
+Change the 3B network such that it:
+you have used a block of following layers: 32 (same) > 64 (same) > 128 (same) > 256 (same) > 512 (same) > MP
+you use this block 4 (four) times (this four is wrongly mentioned as three in the content, you need to add four blocks)
+you have provisioned to concatenate the output of block 1 with the output of block 4
+you have flattened the output of above concatenated 4 blocks, and fed it to the softmax layer
+trained the network for 50 Epochs
