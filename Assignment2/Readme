@@ -1,0 +1,7 @@
+2A: REFERENCE (https://hmkcode.github.io/ai/backpropagation-step-by-step/) Open this link. You'd see these values being used: 
+
+w1 = 0.11, w2 = 0.21, w3 = 0.12, w4 = 0.08, w5 = 0.14 and w6 = 0.15 .
+
+You need to change all the values (keep them small, less than 1), re-write the whole blog again in a markdown (you can copy text, but you need to write all matrices and calculations on your own). This time you'd be writing markdown in Google Colab. So the first half of your Google Colab file must have the markdown content. 
+
+2B: Python (https://github.com/machinelearningblr/machinelearningblr.github.io/blob/master/tutorials/CS231n-Materials/CS231n-python-numpy-tutorial.ipynb) most of the Python you'd need to know. Once you have enough experience with python, write code to reproduce the above results.
