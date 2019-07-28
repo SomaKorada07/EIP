@@ -1,0 +1,23 @@
+Assignment 1A:
+Change the model such that after executing these two lines:
+
+score = model.evaluate(X_test, Y_test, verbose=0)
+print(score)
+your accuracy printed out should be more than 99.0000
+
+Assignment 1B:
+Pick any 5 topics from below. Each article cannot be less must be between 50 to 100 words.
+
+Topics:
+
+Convolution
+Filters/Kernels
+Epochs
+1x1 convolution
+3x3 convolution
+Feature Maps
+Feature Engineering (older computer vision concept)
+Activation Function
+How to create an account on GitHub and upload a sample project
+Receptive Field.
+10 examples of the use of MathJax in Markdown
