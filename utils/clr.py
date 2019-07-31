@@ -7,6 +7,8 @@ from keras import backend as K
 
 class OneCycleLR(Callback):
     def __init__(self,
+                 num_samples,
+                 batchsize,
                  max_lr,
                  end_percentage=0.1,
                  scale_percentage=None,
@@ -63,8 +65,8 @@ class OneCycleLR(Callback):
         self.history = {}
 
         self.epochs = None
-        self.batch_size = None
-        self.samples = None
+        self.batch_size = batchsize
+        self.samples = num_samples
         self.steps = None
         self.num_iterations = None
         self.mid_cycle_id = None
@@ -138,18 +140,18 @@ class OneCycleLR(Callback):
         logs = logs or {}
 
         self.epochs = self.params['epochs']
-        self.batch_size = self.params['batch_size']
-        self.samples = self.params['samples']
-        self.steps = self.params['steps']
+        #self.batch_size = self.params['batch_size']
+        #self.samples = self.params['samples']
+        #self.steps = self.params['steps']
 
         if self.steps is not None:
             self.num_iterations = self.epochs * self.steps
         else:
-            if (self.samples % self.batch_size) == 0:
+            if (int(self.samples) % int(self.batch_size)) == 0:
                 remainder = 0
             else:
                 remainder = 1
-            self.num_iterations = (self.epochs + remainder) * self.samples // self.batch_size
+            self.num_iterations = (self.epochs + remainder) * int(self.samples) // int(self.batch_size)
 
         self.mid_cycle_id = int(self.num_iterations * ((1. - self.end_percentage)) / float(2))
 
