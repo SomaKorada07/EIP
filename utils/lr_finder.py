@@ -11,87 +11,153 @@ import scipy.ndimage.morphology as morphology
 import pandas as pd
 
 
-def detect_local_minima(arr):
-    # https://stackoverflow.com/questions/4624970/finding-local-maxima-minima-with-numpy-in-a-1d-numpy-array
-    # https://stackoverflow.com/questions/3986345/how-to-find-the-local-minima-of-a-smooth-multidimensional-array-in-numpy-efficien
-    # https://stackoverflow.com/questions/3684484/peak-detection-in-a-2d-array/3689710#3689710
-    """
-    Takes an array and detects the troughs using the local maximum filter.
-    Returns a boolean mask of the troughs (i.e. 1 when
-    the pixel's value is the neighborhood maximum, 0 otherwise)
-    """
-    # define an connected neighborhood
-    # http://www.scipy.org/doc/api_docs/SciPy.ndimage.morphology.html#generate_binary_structure
-    neighborhood = morphology.generate_binary_structure(len(arr.shape), 2)
-    # apply the local minimum filter; all locations of minimum value
-    # in their neighborhood are set to 1
-    # http://www.scipy.org/doc/api_docs/SciPy.ndimage.filters.html#minimum_filter
-    local_min = (filters.minimum_filter(arr, footprint=neighborhood) == arr)
-    # local_min is a mask that contains the peaks we are
-    # looking for, but also the background.
-    # In order to isolate the peaks we must remove the background from the mask.
-    #
-    # we create the mask of the background
-    background = (arr == 0)
-    #
-    # a little technicality: we must erode the background in order to
-    # successfully subtract it from local_min, otherwise a line will
-    # appear along the background border (artifact of the local minimum filter)
-    # http://www.scipy.org/doc/api_docs/SciPy.ndimage.morphology.html#binary_erosion
-    eroded_background = morphology.binary_erosion(
-        background, structure=neighborhood, border_value=1)
-    #
-    # we obtain the final mask, containing only peaks,
-    # by removing the background from the local_min mask
-    detected_minima = local_min ^ eroded_background
-    return np.where(detected_minima)
+class LRFinder(Callback):
+    def __init__(self,
+                 num_samples,
+                 batch_size,
+                 minimum_lr=1e-5,
+                 maximum_lr=10.,
+                 lr_scale='exp',
+                 validation_data=None,
+                 validation_sample_rate=5,
+                 stopping_criterion_factor=4.,
+                 loss_smoothing_beta=0.98,
+                 save_dir=None,
+                 verbose=True):
+        """
+        This class uses the Cyclic Learning Rate history to find a
+        set of learning rates that can be good initializations for the
+        One-Cycle training proposed by Leslie Smith in the paper referenced
+        below.
 
+        A port of the Fast.ai implementation for Keras.
 
-def moving_average_fast(x, w):
-    # https://stackoverflow.com/questions/14313510/how-to-calculate-moving-average-using-numpy
-    return np.convolve(np.array(x), np.ones(w), 'same') / w
+        # Note
+        This requires that the model be trained for exactly 1 epoch. If the model
+        is trained for more epochs, then the metric calculations are only done for
+        the first epoch.
 
+        # Interpretation
+        Upon visualizing the loss plot, check where the loss starts to increase
+        rapidly. Choose a learning rate at somewhat prior to the corresponding
+        position in the plot for faster convergence. This will be the maximum_lr lr.
+        Choose the max value as this value when passing the `max_val` argument
+        to OneCycleLR callback.
 
-def moving_average(x, w):
-    df = pd.DataFrame({"x": x})
-    return df.rolling(w, win_type=None, min_periods=1, center=True).mean()['x'].values
+        Since the plot is in log-scale, you need to compute 10 ^ (-k) of the x-axis
 
+        # Arguments:
+            num_samples: Integer. Number of samples in the dataset.
+            batch_size: Integer. Batch size during training.
+            minimum_lr: Float. Initial learning rate (and the minimum).
+            maximum_lr: Float. Final learning rate (and the maximum).
+            lr_scale: Can be one of ['exp', 'linear']. Chooses the type of
+                scaling for each update to the learning rate during subsequent
+                batches. Choose 'exp' for large range and 'linear' for small range.
+            validation_data: Requires the validation dataset as a tuple of
+                (X, y) belonging to the validation set. If provided, will use the
+                validation set to compute the loss metrics. Else uses the training
+                batch loss. Will warn if not provided to alert the user.
+            validation_sample_rate: Positive or Negative Integer. Number of batches to sample from the
+                validation set per iteration of the LRFinder. Larger number of
+                samples will reduce the variance but will take longer time to execute
+                per batch.
 
-from matplotlib import pyplot as plt
-import math
-from keras.callbacks import LambdaCallback
-import keras.backend as K
-import numpy as np
+                If Positive > 0, will sample from the validation dataset
+                If Megative, will use the entire dataset
+            stopping_criterion_factor: Integer or None. A factor which is used
+                to measure large increase in the loss value during training.
+                Since callbacks cannot stop training of a model, it will simply
+                stop logging the additional values from the epochs after this
+                stopping criterion has been met.
+                If None, this check will not be performed.
+            loss_smoothing_beta: Float. The smoothing factor for the moving
+                average of the loss function.
+            save_dir: Optional, String. If passed a directory path, the callback
+                will save the running loss and learning rates to two separate numpy
+                arrays inside this directory. If the directory in this path does not
+                exist, they will be created.
+            verbose: Whether to print the learning rate after every batch of training.
 
+        # References:
+            - [A disciplined approach to neural network hyper-parameters: Part 1 -- learning rate, batch size, weight_decay, and weight decay](https://arxiv.org/abs/1803.09820)
+        """
+        super(LRFinder, self).__init__()
 
-class LRFinder:
-    """
-    Plots the change of the loss function of a Keras model when the learning rate is exponentially increasing.
-    See for details:
-    https://towardsdatascience.com/estimating-optimal-learning-rate-for-a-deep-neural-network-ce32f2556ce0
-    """
+        if lr_scale not in ['exp', 'linear']:
+            raise ValueError("`lr_scale` must be one of ['exp', 'linear']")
 
-    def __init__(self, model, num_validation_batches=10):
-        self.model = model
-        self.losses = []
-        self.lrs = []
-        self.best_loss = 1e9
-        self.num_validation_batches = num_validation_batches
-        self.validation_set = None
-        self.validation_generator = None
+        if validation_data is not None:
+            self.validation_data = validation_data
+            self.use_validation_set = True
 
-    def on_batch_end(self, batch, logs):
-        # Log the learning rate
-        lr = K.get_value(self.model.optimizer.lr)
-        self.lrs.append(lr)
+            if validation_sample_rate > 0 or validation_sample_rate < 0:
+                self.validation_sample_rate = validation_sample_rate
+            else:
+                raise ValueError("`validation_sample_rate` must be a positive or negative integer other than o")
+        else:
+            self.use_validation_set = False
+            self.validation_sample_rate = 0
 
-        # Log the loss
+        self.num_samples = num_samples
+        self.batch_size = batch_size
+        self.initial_lr = minimum_lr
+        self.final_lr = maximum_lr
+        self.lr_scale = lr_scale
+        self.stopping_criterion_factor = stopping_criterion_factor
+        self.loss_smoothing_beta = loss_smoothing_beta
+        self.save_dir = save_dir
+        self.verbose = verbose
 
-        if self.validation_set is not None:
-            X, Y = self.validation_set[0], self.validation_set[1]
+        self.num_batches_ = num_samples // batch_size
+        self.current_lr_ = minimum_lr
 
-            # use 10 random batches from test set for fast approximate of loss
-            num_samples = self.batch_size * self.num_validation_batches
+        if lr_scale == 'exp':
+            self.lr_multiplier_ = (maximum_lr / float(minimum_lr)) ** (
+                1. / float(self.num_batches_))
+        else:
+            extra_batch = int((num_samples % batch_size) != 0)
+            self.lr_multiplier_ = np.linspace(
+                minimum_lr, maximum_lr, num=self.num_batches_ + extra_batch)
+
+        # If negative, use entire validation set
+        if self.validation_sample_rate < 0:
+            self.validation_sample_rate = self.validation_data[0].shape[0] // batch_size
+
+        self.current_batch_ = 0
+        self.current_epoch_ = 0
+        self.best_loss_ = 1e6
+        self.running_loss_ = 0.
+
+        self.history = {}
+
+    def on_train_begin(self, logs=None):
+
+        self.current_epoch_ = 1
+        K.set_value(self.model.optimizer.lr, self.initial_lr)
+
+        warnings.simplefilter("ignore")
+
+    def on_epoch_begin(self, epoch, logs=None):
+        self.current_batch_ = 0
+
+        if self.current_epoch_ > 1:
+            warnings.warn(
+                "\n\nLearning rate finder should be used only with a single epoch. "
+                "Hereafter, the callback will not measure the losses.\n\n")
+
+    def on_batch_begin(self, batch, logs=None):
+        self.current_batch_ += 1
+
+    def on_batch_end(self, batch, logs=None):
+        if self.current_epoch_ > 1:
+            return
+
+        if self.use_validation_set:
+            X, Y = self.validation_data[0], self.validation_data[1]
+
+            # use 5 random batches from test set for fast approximate of loss
+            num_samples = self.batch_size * self.validation_sample_rate
 
             if num_samples > X.shape[0]:
                 num_samples = X.shape[0]
@@ -102,172 +168,213 @@ class LRFinder:
 
             values = self.model.evaluate(x, y, batch_size=self.batch_size, verbose=False)
             loss = values[0]
-        elif self.validation_generator is not None:
-            values = self.model.evaluate_generator(self.validation_generator, steps=self.num_validation_batches, )
-            # print(values[0],logs['loss'])
-            loss = values[0]
         else:
             loss = logs['loss']
 
-        self.losses.append(loss)
+        # smooth the loss value and bias correct
+        running_loss = self.loss_smoothing_beta * loss + (
+            1. - self.loss_smoothing_beta) * loss
+        running_loss = running_loss / (
+            1. - self.loss_smoothing_beta**self.current_batch_)
 
-        # Check whether the loss got too large or NaN
-        if batch > 10 and (math.isnan(loss) or loss > self.best_loss * 8):
-            self.model.stop_training = True
-            print("Stop Training at %s, loss = %.3f" % (batch, loss))
+        # stop logging if loss is too large
+        if self.current_batch_ > 1 and self.stopping_criterion_factor is not None and (
+                running_loss >
+                self.stopping_criterion_factor * self.best_loss_):
+
+            if self.verbose:
+                print(" - LRFinder: Skipping iteration since loss is %d times as large as best loss (%0.4f)"
+                      % (self.stopping_criterion_factor, self.best_loss_))
             return
 
-        if loss < self.best_loss:
-            self.best_loss = loss
+        if running_loss < self.best_loss_ or self.current_batch_ == 1:
+            self.best_loss_ = running_loss
 
-        # Increase the learning rate for the next batch
-        lr *= self.lr_mult
-        K.set_value(self.model.optimizer.lr, lr)
+        current_lr = K.get_value(self.model.optimizer.lr)
 
-    def find(self, x_train, y_train, start_lr, end_lr,
-             x_test=None, y_test=None,
-             batch_size=64, epochs=1):
-        num_batches = epochs * x_train.shape[0] / batch_size
-        self.lr_mult = (float(end_lr) / float(start_lr)) ** (float(1) / float(num_batches))
+        self.history.setdefault('running_loss_', []).append(running_loss)
+        if self.lr_scale == 'exp':
+            self.history.setdefault('log_lrs', []).append(np.log10(current_lr))
+        else:
+            self.history.setdefault('log_lrs', []).append(current_lr)
 
-        # Save weights into a file
-        self.model.save_weights('tmp.h5')
+        # compute the lr for the next batch and update the optimizer lr
+        if self.lr_scale == 'exp':
+            current_lr *= self.lr_multiplier_
+        else:
+            current_lr = self.lr_multiplier_[self.current_batch_ - 1]
 
-        # Remember the original learning rate
-        original_lr = K.get_value(self.model.optimizer.lr)
+        K.set_value(self.model.optimizer.lr, current_lr)
 
-        # Set the initial learning rate
-        K.set_value(self.model.optimizer.lr, start_lr)
+        # save the other metrics as well
+        for k, v in logs.items():
+            self.history.setdefault(k, []).append(v)
 
-        callback = LambdaCallback(on_batch_end=lambda batch, logs: self.on_batch_end(batch, logs))
-        self.validation_set = (x_test, y_test) if x_test is not None and y_test is not None else None
-        self.batch_size = batch_size
+        if self.verbose:
+            if self.use_validation_set:
+                print(" - LRFinder: val_loss: %1.4f - lr = %1.8f " %
+                      (values[0], current_lr))
+            else:
+                print(" - LRFinder: lr = %1.8f " % current_lr)
 
-        self.model.fit(x_train, y_train,
-                       batch_size=batch_size, epochs=epochs,
-                       verbose=0,
-                       callbacks=[callback])
+    def on_epoch_end(self, epoch, logs=None):
+        if self.save_dir is not None and self.current_epoch_ <= 1:
+            if not os.path.exists(self.save_dir):
+                os.makedirs(self.save_dir)
 
-        # Restore the weights to the state before model fitting
-        self.model.load_weights('tmp.h5')
+            losses_path = os.path.join(self.save_dir, 'losses.npy')
+            lrs_path = os.path.join(self.save_dir, 'lrs.npy')
 
-        # Restore the original learning rate
-        K.set_value(self.model.optimizer.lr, original_lr)
+            np.save(losses_path, self.losses)
+            np.save(lrs_path, self.lrs)
 
-    def find_generator(self, generator, start_lr, end_lr,
-                       test_generator=None,
-                       epochs=1, steps_per_epoch=None, **kw_fit):
-        if steps_per_epoch is None:
-            try:
-                steps_per_epoch = len(generator)
-            except (ValueError, NotImplementedError) as e:
-                raise e('`steps_per_epoch=None` is only valid for a'
-                        ' generator based on the '
-                        '`keras.utils.Sequence`'
-                        ' class. Please specify `steps_per_epoch` '
-                        'or use the `keras.utils.Sequence` class.')
-        self.lr_mult = (float(end_lr) / float(start_lr)) ** (float(1) / float(steps_per_epoch * epochs))
+            if self.verbose:
+                print("\tLR Finder : Saved the losses and learning rate values in path : {%s}"
+                      % (self.save_dir))
 
-        # Save weights into a file
-        self.model.save_weights('tmp.h5')
+        self.current_epoch_ += 1
 
-        # Remember the original learning rate
-        original_lr = K.get_value(self.model.optimizer.lr)
+        warnings.simplefilter("default")
 
-        # Set the initial learning rate
-        K.set_value(self.model.optimizer.lr, start_lr)
-
-        callback = LambdaCallback(on_batch_end=lambda batch,
-                                                      logs: self.on_batch_end(batch, logs))
-
-        self.validation_generator = test_generator
-
-        self.model.fit_generator(generator=generator,
-                                 epochs=epochs,
-                                 steps_per_epoch=steps_per_epoch,
-                                 callbacks=[callback],
-                                 verbose=0,
-                                 **kw_fit)
-
-        # Restore the weights to the state before model fitting
-        self.model.load_weights('tmp.h5')
-
-        # Restore the original learning rate
-        K.set_value(self.model.optimizer.lr, original_lr)
-
-    def plot_loss(self, n_skip_beginning=5, n_skip_end=5, sma=10):
+    def plot_schedule(self, clip_beginning=None, clip_endding=None):
         """
-        Plots the loss.
-        Parameters:
-            n_skip_beginning - number of batches to skip on the left.
-            n_skip_end - number of batches to skip on the right.
+        Plots the schedule from the callback itself.
+
+        # Arguments:
+            clip_beginning: Integer or None. If positive integer, it will
+                remove the specified portion of the loss graph to remove the large
+                loss values in the beginning of the graph.
+            clip_endding: Integer or None. If negative integer, it will
+                remove the specified portion of the ending of the loss graph to
+                remove the sharp increase in the loss values at high learning rates.
         """
-        fig = plt.figure(figsize=(12, 6))
-        ax = fig.add_subplot(111)
-        plt.ylabel("loss")
-        plt.xlabel("learning rate (log scale)")
+        try:
+            import matplotlib.pyplot as plt
+            plt.style.use('seaborn-white')
+        except ImportError:
+            print(
+                "Matplotlib not found. Please use `pip install matplotlib` first."
+            )
+            return
+
+        if clip_beginning is not None and clip_beginning < 0:
+            clip_beginning = -clip_beginning
+
+        if clip_endding is not None and clip_endding > 0:
+            clip_endding = -clip_endding
 
         losses = self.losses
-        losses = moving_average(losses, sma)
+        lrs = self.lrs
 
-        losses = losses[n_skip_beginning:-n_skip_end]
+        if clip_beginning:
+            losses = losses[clip_beginning:]
+            lrs = lrs[clip_beginning:]
 
-        plt.plot(self.lrs[n_skip_beginning:-n_skip_end], losses)
-        plt.xscale('log')
-        best_lrs = self.get_best_lrs(sma)
-        lrs = [x for x, _ in best_lrs]
-        positions = [x for _, x in best_lrs]
-        # https://matplotlib.org/users/annotations_intro.html
-        for lr, pos in [best_lrs[-1]]:
-            ax.annotate('LR = %.3f, Loss = %.3f' % (lr, losses[pos]), xy=(lr, losses[pos]),
-                        xytext=(lr + 0.2, losses[pos] + 0.1),
-                        arrowprops=dict(facecolor='black', shrink=0.03, width=1, frac=0.05),
-                        )
+        if clip_endding:
+            losses = losses[:clip_endding]
+            lrs = lrs[:clip_endding]
 
-        title = "LR-Loss Graph"
-        title = title + "\n" + "Best Candidate LR = %s" % lrs
-        title = title + "\n" + "These Candidate LRs denote the positions of minima/troughs in LR-Loss graph"
-        plt.title(title)
+        plt.plot(lrs, losses)
+        plt.title('Learning rate vs Loss')
+        plt.xlabel('learning rate')
+        plt.ylabel('loss')
         plt.show()
 
-    def get_derivatives(self, sma=10):
-        assert sma >= 1
-        derivatives = [0] * sma
-        losses = moving_average(self.losses, 5)
-        for i in range(sma, len(self.lrs)):
-            derivatives.append((losses[i] - losses[i - sma]) / sma)
-        return derivatives
+    @classmethod
+    def restore_schedule_from_dir(cls,
+                                  directory,
+                                  clip_beginning=None,
+                                  clip_endding=None):
+        """
+        Loads the training history from the saved numpy files in the given directory.
 
-    def __get_best_lr_method1__(self, sma, n_skip_beginning=10, n_skip_end=5):
-        derivatives = self.get_derivatives(sma)
-        losses = np.array(self.losses[n_skip_beginning:-n_skip_end])
-        derivatives = derivatives[n_skip_beginning:-n_skip_end]
-        lrs = self.lrs[n_skip_beginning:-n_skip_end]
+        # Arguments:
+            directory: String. Path to the directory where the serialized numpy
+                arrays of the loss and learning rates are saved.
+            clip_beginning: Integer or None. If positive integer, it will
+                remove the specified portion of the loss graph to remove the large
+                loss values in the beginning of the graph.
+            clip_endding: Integer or None. If negative integer, it will
+                remove the specified portion of the ending of the loss graph to
+                remove the sharp increase in the loss values at high learning rates.
 
-        idxs = np.where(losses >= self.best_loss * 2)[0]
-        idxs = idxs[0]
-        derivatives = derivatives[:idxs + sma]
-        losses = losses[:idxs + sma]
-        lrs = lrs[:idxs + sma]
+        Returns:
+            tuple of (losses, learning rates)
+        """
+        if clip_beginning is not None and clip_beginning < 0:
+            clip_beginning = -clip_beginning
 
-        best_idxs = np.argpartition(derivatives[:idxs], -5)[-5:]
-        best_idxs = best_idxs - sma
-        acceptable_loss_or_not = losses[best_idxs] <= self.best_loss * 4
-        best_idxs = best_idxs[acceptable_loss_or_not]
+        if clip_endding is not None and clip_endding > 0:
+            clip_endding = -clip_endding
 
-        acceptable_loss_or_not = losses[best_idxs + sma] > (losses[best_idxs] * 1.05)
-        best_idxs = best_idxs[acceptable_loss_or_not]
+        losses_path = os.path.join(directory, 'losses.npy')
+        lrs_path = os.path.join(directory, 'lrs.npy')
 
-        candidates = list(np.array(lrs)[best_idxs])
-        return sorted(candidates), best_idxs
+        if not os.path.exists(losses_path) or not os.path.exists(lrs_path):
+            print("%s and %s could not be found at directory : {%s}" %
+                  (losses_path, lrs_path, directory))
 
-    def get_best_lrs(self, sma, n_skip_beginning=10, n_skip_end=5):
-        c1, i1 = self.__get_best_lr_method1__(sma, n_skip_beginning, n_skip_end)
-        candidates = list(zip(c1, i1))
-        candidates = sorted(candidates, key=lambda pair: pair[0])
-        final_candidates = [candidates[0]]
-        for v, i in candidates:
-            if (v - final_candidates[-1][0]) / final_candidates[-1][0] > 0.2:
-                final_candidates.append((v, i))
-        final_candidates = list(map(lambda pair: (float("%.3f" % pair[0]), pair[1]), final_candidates))
-        return final_candidates
+            losses = None
+            lrs = None
+
+        else:
+            losses = np.load(losses_path)
+            lrs = np.load(lrs_path)
+
+            if clip_beginning:
+                losses = losses[clip_beginning:]
+                lrs = lrs[clip_beginning:]
+
+            if clip_endding:
+                losses = losses[:clip_endding]
+                lrs = lrs[:clip_endding]
+
+        return losses, lrs
+
+    @classmethod
+    def plot_schedule_from_file(cls,
+                                directory,
+                                clip_beginning=None,
+                                clip_endding=None):
+        """
+        Plots the schedule from the saved numpy arrays of the loss and learning
+        rate values in the specified directory.
+
+        # Arguments:
+            directory: String. Path to the directory where the serialized numpy
+                arrays of the loss and learning rates are saved.
+            clip_beginning: Integer or None. If positive integer, it will
+                remove the specified portion of the loss graph to remove the large
+                loss values in the beginning of the graph.
+            clip_endding: Integer or None. If negative integer, it will
+                remove the specified portion of the ending of the loss graph to
+                remove the sharp increase in the loss values at high learning rates.
+        """
+        try:
+            import matplotlib.pyplot as plt
+            plt.style.use('seaborn-white')
+        except ImportError:
+            print("Matplotlib not found. Please use `pip install matplotlib` first.")
+            return
+
+        losses, lrs = cls.restore_schedule_from_dir(
+            directory,
+            clip_beginning=clip_beginning,
+            clip_endding=clip_endding)
+
+        if losses is None or lrs is None:
+            return
+        else:
+            plt.plot(lrs, losses)
+            plt.title('Learning rate vs Loss')
+            plt.xlabel('learning rate')
+            plt.ylabel('loss')
+            plt.show()
+
+    @property
+    def lrs(self):
+        return np.array(self.history['log_lrs'])
+
+    @property
+    def losses(self):
+        return np.array(self.history['running_loss_'])
