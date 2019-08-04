@@ -12,7 +12,6 @@ class OneCycleLR(Callback):
                  epochs,
                  batch_size,
                  samples,
-                 steps,
                  max_lr,
                  end_percentage=0.1,
                  scale=100,
@@ -69,7 +68,7 @@ class OneCycleLR(Callback):
         self.epochs = epochs
         self.batch_size = batch_size
         self.samples = samples
-        self.steps = steps
+        self.steps = None
         self.num_iterations = None
         self.mid_cycle_id = None
 
