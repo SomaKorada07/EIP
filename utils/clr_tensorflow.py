@@ -166,7 +166,7 @@ class OneCycleLR(Callback):
         new_lr = self.compute_lr()
 
         self.history.setdefault('lr', []).append(
-            tf.keras.backend..get_value(self.model.optimizer.lr))
+            tf.keras.backend.get_value(self.model.optimizer.lr))
         tf.keras.backend.set_value(self.model.optimizer.lr, new_lr)
 
         if self._update_momentum:
