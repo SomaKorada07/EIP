@@ -135,7 +135,7 @@ class OneCycleLR(Callback):
 
         return new_momentum
 
-    def on_train_batch_begin(self, logs={}):
+    def on_train_begin(self, logs={}):
         logs = logs or {}
 
         if self.steps is not None:
